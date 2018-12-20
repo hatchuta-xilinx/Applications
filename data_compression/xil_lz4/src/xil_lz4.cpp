@@ -135,7 +135,7 @@ uint64_t xil_lz4::compress_file(std::string & inFile_name,
         //uint64_t enbytes = compress(in.data(), out.data(), input_size, host_buffer_size);
    
         // LZ4 multiple/single cu sequential version
-        uint32_t enbytes = compress_sequential(in.data(), out.data(), input_size);
+        uint32_t enbytes = compress_sequential(in.data(), out.data(), input_size);        
     
         // Writing compressed data
         outFile.write((char *)out.data(), enbytes);
@@ -992,7 +992,9 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
     if (original_size == orig_size) printf ("TEST PASSED\n");
     else printf ("TEST FAILED\n");
     float throughput_in_mbps_1 = (float)total_decomression_size* 1000 / kernel_time_ns_1.count();
-    std::cout << std::fixed << std::setprecision(2) << throughput_in_mbps_1;
+    float bandwidth_in_mbps_1 = (float)original_size* 1000 / kernel_time_ns_1.count();
+    std::cout << std::fixed << std::setprecision(2) << throughput_in_mbps_1 << "\t\t";
+    std::cout << std::fixed << std::setprecision(2) << bandwidth_in_mbps_1;
     return original_size;
 
 } // End of decompress
@@ -1540,6 +1542,9 @@ uint64_t xil_lz4::compress_sequential(uint8_t *in,
         }
     }
     float throughput_in_mbps_1 = (float)input_size * 1000 / kernel_time_ns_1.count();
-    std::cout << std::fixed << std::setprecision(2) << throughput_in_mbps_1;
+    float bandwidth_in_mbps_1 = (float)outIdx * 1000 / kernel_time_ns_1.count();
+    std::cout << std::fixed << std::setprecision(2) << throughput_in_mbps_1 << "\t\t"; 
+    std::cout << std::fixed << std::setprecision(2) << bandwidth_in_mbps_1;
+
     return outIdx;
 }

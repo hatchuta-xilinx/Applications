@@ -154,7 +154,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
    
         if (c_flow == 0) { 
             std::cout<<"\n";
-            std::cout<<"KT(MBps)\tLZ4_CR\t\tFile Size(MB)\t\tFile Name"<<std::endl;
+            std::cout<<"KT(MB/s)\tData BW(MB/s)\tLZ4_CR\t\tFile Size(MB)\t\tFile Name"<<std::endl;
             std::cout<<"\n";
         } else {
             std::cout<<"\n";
@@ -237,7 +237,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
     std::cout << "--------------------------------------------------------------" << std::endl;
     if (d_flow == 0) {
         std::cout<<"\n";
-        std::cout<<"KT(MBps)\tFile Size(MB)\t\tFile Name"<<std::endl;
+        std::cout<<"KT(MB/s)\tData BW(MB/s)\tFile Size(MB)\t\tFile Name"<<std::endl;
         std::cout<<"\n";
     } else {
         std::cout<<"\n";
