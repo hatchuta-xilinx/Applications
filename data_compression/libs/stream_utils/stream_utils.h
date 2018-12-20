@@ -52,6 +52,12 @@
             if(tmpValue == 0) end_of_stream.range(i,i) = 1; \
         }
 
+#define STREAM_UTILS_S2MMDEC_READ_SIZE(i,instream)\
+        if (!instream.empty()){ \
+            uint32_t tmpValue = instream.read(); \
+            lzOutSize[i] += tmpValue; \
+        }
+
 #define STREAM_UTILS_S2MM_IF_NOT_EMPTY(i,instream,burst_size,input_size,read_size,write_size,write_idx) \
             burst_size[i] = c_max_burst_size; \
             if(end_of_stream.range(i,i) && ((input_size[i] - write_size[i]) < burst_size[i])){ \
@@ -199,6 +205,7 @@ void stream_downsizer(
         hls::stream<ap_uint<OUT_WIDTH> > &outStream,
         SIZE_DT input_size)
 {
+    if (input_size == 0) return;
     const int c_byte_width = 8;
     const int c_input_word = IN_WIDTH/c_byte_width;
     const int c_out_word   = OUT_WIDTH/c_byte_width;
@@ -238,6 +245,45 @@ void stream_upsizer(
         outStream << outBuffer;
     }
 }
+
+template <class SIZE_DT, int IN_WIDTH, int OUT_WIDTH>
+void stream_upsizer_decompress(
+        hls::stream<ap_uint<IN_WIDTH> >     &inStream,
+        hls::stream<uint32_t>     &outStreamSize,
+        SIZE_DT original_size
+        )
+{
+    uint32_t total_size = 0;
+    uint8_t parallel_byte = IN_WIDTH/8;
+    int pack_size = OUT_WIDTH/IN_WIDTH;
+    uint16_t cntr = 0;
+    uint32_t byteIdx = 0;
+    if (original_size){
+        ap_uint<OUT_WIDTH> outBuffer;       
+        uint32_t  terminate = (original_size - 1)/parallel_byte + 1;
+        for(int i = 0; i < terminate; i += pack_size) {
+            int chunk_size = pack_size;
+        
+            if(i + pack_size > terminate) 
+                chunk_size = terminate - i;
+
+            for(int j = 0; j < chunk_size; j++){
+            #pragma HLS PIPELINE II=1        
+                //read_cntr++;
+                ap_uint<IN_WIDTH> c = inStream.read();
+                outBuffer.range((j+1)*IN_WIDTH - 1, j*IN_WIDTH) = c;
+                total_size += parallel_byte;
+            }
+            //outStream << outBuffer;
+        }
+        //uint8_t temp = total_size - (parallel_byte - (original_size%parallel_byte));
+        if (total_size >= original_size) outStreamSize << original_size;
+    }
+    else outStreamSize << 0;
+
+    //printf("Tsize:%d \t OSize:%d \n",total_size,original_size);
+}
+
 template <class SIZE_DT, int IN_WIDTH, int OUT_WIDTH>
 void upsizer_sizestream(
         hls::stream<ap_uint<IN_WIDTH> >     &inStream,
@@ -420,97 +466,47 @@ void    s2mm_compress(
 
 template <class STREAM_SIZE_DT, int BURST_SIZE, int DATAWIDTH>
 void    s2mm_decompress(
-        ap_uint<DATAWIDTH>                  *out, 
-        const uint32_t                      output_idx[PARALLEL_BLOCK],
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_0,
+        hls::stream<uint32_t>               &inStreamSize_0,
 #if PARALLEL_BLOCK > 1
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_1,
+        hls::stream<uint32_t>               &inStreamSize_1,
 #endif
 #if PARALLEL_BLOCK > 2
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_2,
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_3,
+        hls::stream<uint32_t>               &inStreamSize_2,
+        hls::stream<uint32_t>               &inStreamSize_3,
 #endif
 #if PARALLEL_BLOCK > 4 
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_4,
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_5,
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_6,
-        hls::stream<ap_uint<DATAWIDTH> >    &inStream_7,
+        hls::stream<uint32_t>               &inStreamSize_4,
+        hls::stream<uint32_t>               &inStreamSize_5,
+        hls::stream<uint32_t>               &inStreamSize_6,
+        hls::stream<uint32_t>               &inStreamSize_7,
 #endif
-        const STREAM_SIZE_DT                      input_size[PARALLEL_BLOCK]
+        uint32_t                            *uncompress_outSize
         )
 {
-    const int c_byte_size = 8;
-    const int c_word_size = DATAWIDTH/c_byte_size;
-    const int c_max_burst_size = c_word_size * BURST_SIZE;
-    uint32_t read_size[PARALLEL_BLOCK];
-    uint32_t write_size[PARALLEL_BLOCK];
-    uint32_t burst_size[PARALLEL_BLOCK];
-    uint32_t write_idx[PARALLEL_BLOCK];
-    #pragma HLS ARRAY PARTITION variable=input_size dim=0 complete
-    #pragma HLS ARRAY PARTITION variable=read_size  dim=0 complete
-    #pragma HLS ARRAY PARTITION variable=write_size dim=0 complete
-    #pragma HLS ARRAY PARTITION variable=write_idx dim=0 complete
-    #pragma HLS ARRAY PARTITION variable=burst_size dim=0 complete
-    ap_uint<PARALLEL_BLOCK> end_of_stream = 0;
-    ap_uint<PARALLEL_BLOCK> is_pending = 1;
-    ap_uint<DATAWIDTH> local_buffer[PARALLEL_BLOCK][BURST_SIZE];
-    #pragma HLS ARRAY_PARTITION variable=local_buffer dim=1 complete
-    #pragma HLS RESOURCE variable=local_buffer core=RAM_2P_LUTRAM
-
-    //printme("%s:Started\n", __FUNCTION__);
+    uint32_t lzOutSize[PARALLEL_BLOCK];
+    #pragma HLS ARRAY PARTITION variable=lzOutSize dim=0 complete
+    uint32_t size = 0;
     for (int i = 0; i < PARALLEL_BLOCK ; i++){
         #pragma HLS UNROLL
-        read_size[i] = 0;
-        write_size[i] = 0;
-        write_idx[i] = 0;
-        //printme("%s:Indx=%d out_idx=%d\n",__FUNCTION__,i , output_idx[i]);
+        lzOutSize[i] = 0;
     }
-    bool done = false;
-    uint32_t loc=0;
-    uint32_t remaining_data = 0;
-    while(is_pending != 0){
-        done = false;
-        for (int i = 0 ; (is_pending != 0) && (done == 0) ; i++ ){
-            #pragma HLS PIPELINE II=1 
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(0,inStream_0,burst_size,input_size,read_size,write_size,write_idx); 
-#if PARALLEL_BLOCK > 1
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(1,inStream_1,burst_size,input_size,read_size,write_size,write_idx); 
+
+    lzOutSize[0] = inStreamSize_0.read();
+#if PARALLEL_BLOCK > 1    
+    lzOutSize[1] = inStreamSize_1.read();
 #endif
-#if PARALLEL_BLOCK > 2
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(2,inStream_2,burst_size,input_size,read_size,write_size,write_idx); 
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(3,inStream_3,burst_size,input_size,read_size,write_size,write_idx); 
+#if PARALLEL_BLOCK > 2    
+    lzOutSize[2] = inStreamSize_2.read();
+    lzOutSize[3] = inStreamSize_3.read();
 #endif
 #if PARALLEL_BLOCK > 4
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(4,inStream_4,burst_size,input_size,read_size,write_size,write_idx); 
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(5,inStream_5,burst_size,input_size,read_size,write_size,write_idx); 
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(6,inStream_6,burst_size,input_size,read_size,write_size,write_idx); 
-            STREAM_UTILS_S2MM_DEC_IF_NOT_EMPTY(7,inStream_7,burst_size,input_size,read_size,write_size,write_idx); 
+    lzOutSize[4] = inStreamSize_4.read();
+    lzOutSize[5] = inStreamSize_5.read();
+    lzOutSize[6] = inStreamSize_6.read();
+    lzOutSize[7] = inStreamSize_7.read();
 #endif
-        }
-          
-        for(int i = 0; i < PARALLEL_BLOCK; i++){
-            //Write the data to global memory
-            if((read_size[i]> write_size[i]) && (read_size[i] - write_size[i]) >= burst_size[i]){
-                uint32_t base_addr = output_idx[i] + write_size[i];
-                uint32_t base_idx = base_addr / c_word_size;
-                uint32_t burst_size_in_words = (burst_size[i])?((burst_size[i]-1)/c_word_size + 1):0;
-                for (int j = 0 ; j < burst_size_in_words ; j++){
-                    #pragma HLS PIPELINE II=1
-                    out[base_idx + j] = local_buffer[i][j];
-                }
-                write_size[i] += burst_size[i];
-                write_idx[i] = 0;
-            }
-       }
-        for(int i = 0; i < PARALLEL_BLOCK; i++){
-            #pragma HLS UNROLL
-            if(done==true && (write_size[i] >= input_size[i])){
-                is_pending.range(i,i) = 0;                
-            }
-            else{
-                is_pending.range(i,i) = 1;
-            }
-       }
-
+    for (uint8_t i = 0; i < PARALLEL_BLOCK; i++){
+        size += lzOutSize[i];
     }
+    *uncompress_outSize += size;
 }

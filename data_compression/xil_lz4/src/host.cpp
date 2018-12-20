@@ -49,7 +49,7 @@ void xil_compress_top(std::string & compress_mod, uint32_t block_size) {
     xlz.init(binaryFileName);
 #ifdef VERBOSE        
     std::cout<<"\n";
-    std::cout<<"E2E(MBps)\tKT(MBps)\tLZ4_CR\t\tFile Size(MB)\t\tFile Name"<<std::endl;
+    std::cout<<"KT(MBps)\tLZ4_CR\t\tFile Size(MB)\t\tFile Name"<<std::endl;
     std::cout<<"\n";
 #endif 
         
@@ -154,7 +154,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
    
         if (c_flow == 0) { 
             std::cout<<"\n";
-            std::cout<<"E2E(MBps)\tKT(MBps)\tLZ4_CR\t\tFile Size(MB)\t\tFile Name"<<std::endl;
+            std::cout<<"KT(MBps)\tLZ4_CR\t\tFile Size(MB)\t\tFile Name"<<std::endl;
             std::cout<<"\n";
         } else {
             std::cout<<"\n";
@@ -237,7 +237,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
     std::cout << "--------------------------------------------------------------" << std::endl;
     if (d_flow == 0) {
         std::cout<<"\n";
-        std::cout<<"E2E(MBps)\tKT(MBps)\tFile Size(MB)\t\tFile Name"<<std::endl;
+        std::cout<<"KT(MBps)\tFile Size(MB)\t\tFile Name"<<std::endl;
         std::cout<<"\n";
     } else {
         std::cout<<"\n";
@@ -259,7 +259,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
             exit(1);
         }
         
-	uint64_t input_size = get_file_size(inFile_dec);
+	uint32_t input_size = get_file_size(inFile_dec);
 	inFile_dec.close();
 
         std::string lz_decompress_in  = file_line;
@@ -269,7 +269,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
         // Call LZ4 decompression
         xlz.m_switch_flow = d_flow;
         xlz.decompress_file(lz_decompress_in, lz_decompress_out, input_size);
-        
+                
         if (d_flow == 0) {
             std::cout   << "\t\t" << (double) input_size / 1000000
                         << "\t\t" << lz_decompress_in << std::endl;
@@ -283,7 +283,7 @@ void xil_compress_decompress_list(std::string & file_list, std::string & ext1,
     if (d_flow == 0){
         xlz.release();
     }
-    
+   //return debytes; 
 }
 void xil_batch_verify(std::string & file_list, int f, uint32_t block_size) {
 
@@ -299,13 +299,15 @@ void xil_batch_verify(std::string & file_list, int f, uint32_t block_size) {
             std::string ext2 = ".xe2xd.lz4";    
             xil_compress_decompress_list(file_list, ext1, ext2, 0, 0, block_size); 
 
-            // Validate 
+            // Validate
+#if 0 
             std::cout<<"\n";
             std::cout << "----------------------------------------------------------------------------------------" << std::endl;
             std::cout << "                       Validate: Xilinx LZ4 Compress vs Xilinx LZ4 Decompress           " << std::endl;
             std::cout << "----------------------------------------------------------------------------------------" << std::endl;
             std::string ext3 = ".xe2xd.lz4.orig";
             xil_validate(file_list, ext3);
+#endif
         
         }
         
@@ -355,12 +357,14 @@ void xil_batch_verify(std::string & file_list, int f, uint32_t block_size) {
             xil_compress_decompress_list(file_list, ext1, ext2, 0, 0, block_size);        
 
             // Validate 
+#if 0
             std::cout<<"\n";
             std::cout << "----------------------------------------------------------------------------------------" << std::endl;
             std::cout << "                       Validate: Xilinx LZ4 Compress vs Xilinx LZ4 Decompress           " << std::endl;
             std::cout << "----------------------------------------------------------------------------------------" << std::endl;
             std::string ext3 = ".xe2xd.lz4.orig";
             xil_validate(file_list, ext3);
+#endif
         
         }
 
@@ -428,7 +432,7 @@ void xil_decompress_top(std::string & decompress_mod) {
 
 #ifdef VERBOSE 
     std::cout<<"\n";
-    std::cout<<"E2E(MBps)\tKT(MBps)\tFile Size(MB)\t\tFile Name"<<std::endl;
+    std::cout<<"KT(MBps)\tFile Size(MB)\t\tFile Name"<<std::endl;
     std::cout<<"\n";
 #endif
 

@@ -42,7 +42,7 @@
 
 //LZ specific Defines
 #define BIT 8
-#define MIN_OFFSET 1
+#define MIN_OFFSET 40 
 #define MIN_MATCH 4
 #define LZ_MAX_OFFSET_LIMIT 65536
 #define LZ_HASH_BIT 12

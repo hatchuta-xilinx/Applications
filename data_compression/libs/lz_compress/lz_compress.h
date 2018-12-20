@@ -34,6 +34,16 @@
 #include <ap_int.h>
 
 typedef ap_uint<32> compressd_dt;
+#define PARALLEL_BYTE 8
+#define PARALLEL_BIT (PARALLEL_BYTE*8)
+
+#define BUFF_DEPTH (64/PARALLEL_BYTE)/2
+#define BUFFER_SIZE (BUFF_DEPTH*1024)
+//LZ Decompress states
+#define READ_LIT_LEN 0
+#define WRITE_LITERAL 1
+#define READ_OFFSET 2
+#define READ_MATCH 3
 
 template <int MATCH_LEN, int MATCH_LEVEL , int LZ_DICT_SIZE, int BIT, int MIN_OFFSET, int MIN_MATCH, int LZ_MAX_OFFSET_LIMIT>
 void lz_compress(
@@ -279,66 +289,176 @@ static void lz_filter(
 
 template<int HISTORY_SIZE, int READ_STATE, int MATCH_STATE, int LOW_OFFSET_STATE, int LOW_OFFSET>
 void lz_decompress(
-        hls::stream<compressd_dt> &inStream,          
-        hls::stream<ap_uint<8> > &outStream,          
+        hls::stream<uint32_t> &litlenStream,          
+        hls::stream<ap_uint<PARALLEL_BIT> >&litStream,          
+        hls::stream<ap_uint<16> >&offsetStream,          
+        hls::stream<uint32_t> &matchlenStream,          
+        hls::stream<ap_uint<PARALLEL_BIT> > &outStream,          
         uint32_t original_size
     )
 {
-    uint8_t local_buf[HISTORY_SIZE];
-    #pragma HLS dependence variable=local_buf inter false
+    if(original_size == 0) return;
 
-    uint32_t match_len = 0; 
-    uint32_t out_len = 0;
+    uint32_t offset_buff_size = LOW_OFFSET/PARALLEL_BYTE;
+    ap_uint<PARALLEL_BIT> local_buf_even[BUFFER_SIZE];
+    #pragma HLS RESOURCE variable=local_buf_even core=XPM_MEMORY uram
+    #pragma HLS dependence variable=local_buf_even inter false
+    ap_uint<PARALLEL_BIT> local_buf_odd[BUFFER_SIZE];
+    #pragma HLS RESOURCE variable=local_buf_odd core=XPM_MEMORY uram
+    #pragma HLS dependence variable=local_buf_odd inter false
+    
+    uint32_t total_cntr = 0; 
+    uint32_t outCntr = 0;
+    uint32_t lit_len = 0; 
+    uint32_t output_cnt = 0;
     uint32_t match_loc = 0;
-    uint32_t length_extract=0;
-    uint8_t next_states = READ_STATE;
-    uint16_t offset =0;
-    compressd_dt nextValue;
-    ap_uint<8> outValue = 0;
-    ap_uint<8> prevValue[LOW_OFFSET];
-    #pragma HLS ARRAY PARTITION variable=prevValue dim=0 complete
-    lz_decompress:for(uint32_t i = 0; i < original_size; i++ ) {
-    #pragma HLS PIPELINE II=1
-        if (next_states == READ_STATE){
-            nextValue = inStream.read();
-            offset         = nextValue.range(15,0);
-            length_extract = nextValue.range(31,16);
-            if (length_extract){
-                match_loc = i -offset -1;
-                match_len = length_extract + 1;
-                //printf("HISTORY=%x\n",(uint8_t)outValue);
-                out_len = 1;
-                if (offset>=LOW_OFFSET){
-                    next_states = MATCH_STATE;
-                    outValue = local_buf[match_loc % HISTORY_SIZE];
-                }else{
-                    next_states = LOW_OFFSET_STATE;
-                    outValue = prevValue[offset];
-                }
-                match_loc++;
-            }else{
-                outValue = nextValue.range(7,0);
-                //printf("LITERAL=%x\n",(uint8_t)outValue);
-            }
-        }else if (next_states == LOW_OFFSET_STATE){
-            outValue = prevValue[offset];
-            match_loc++;
-            out_len++;
-            if (out_len == match_len) next_states = READ_STATE;
-        }else{
-            outValue = local_buf[match_loc % HISTORY_SIZE];
-            //printf("HISTORY=%x\n",(uint8_t)outValue);
-            match_loc++;
-            out_len++;
-            if (out_len == match_len) next_states = READ_STATE;
-        }
-        local_buf[i % HISTORY_SIZE] = outValue;
-        outStream << outValue;
-        for(uint32_t pIdx= LOW_OFFSET-1 ; pIdx > 0 ; pIdx--){
-            #pragma HLS UNROLL
-            prevValue[pIdx] = prevValue[pIdx-1];
-        }
-        prevValue[0] = outValue;
-    }
-}
+    uint32_t match_len=0;
+    uint32_t byte_loc = 0;
+    uint32_t even_write_buff_ind = 0;
+    uint32_t odd_write_buff_ind = 0;
+    uint32_t read_buff_ind = 0;
+    uint32_t terminate = 0;
+    uint32_t out_size = 0;
+    uint32_t output_index = 0;
+    uint32_t offset_incr = 0;
 
+    uint8_t next_state = READ_LIT_LEN;
+    int8_t incr_output_index = 0;
+    bool even_cntr = true;
+    bool outStreamFlag = false;
+    
+    ap_uint<16>offset = 0;
+    ap_uint<PARALLEL_BIT> outStreamValue = 0;
+    ap_uint<2*PARALLEL_BYTE*8> output_window;
+    
+    terminate = (original_size/PARALLEL_BYTE)*PARALLEL_BYTE;       
+
+    lz_decompress:for( ;((out_size+PARALLEL_BYTE) < terminate) || next_state==WRITE_LITERAL; ) {
+    #pragma HLS PIPELINE II=1
+
+        if (outStreamFlag) out_size += PARALLEL_BYTE;
+ 
+        if (next_state == READ_LIT_LEN){
+            incr_output_index = 0;
+            lit_len = litlenStream.read();
+            if (lit_len){
+                next_state = WRITE_LITERAL;
+            }else{
+                next_state = READ_OFFSET;
+            }
+            output_cnt += lit_len;
+        }else if (next_state == WRITE_LITERAL){
+            ap_uint<PARALLEL_BIT> input = litStream.read();
+            for (int read = 0; read < PARALLEL_BYTE; read++){
+            #pragma HLS LOOP UNROLL
+                output_window.range(((read+output_index)+1)*8 -1, (read+output_index)*8) = input.range(((read)+1)*8 -1, (read)*8);
+            }
+            if(lit_len >= PARALLEL_BYTE){
+                incr_output_index = PARALLEL_BYTE;
+                lit_len -= PARALLEL_BYTE;
+            }else{
+                incr_output_index = lit_len;
+                lit_len = 0;
+            }
+            if (lit_len == 0){
+                next_state = READ_OFFSET;
+            }else{
+                next_state = WRITE_LITERAL;
+            }          
+        }else if (next_state == READ_OFFSET){
+            incr_output_index = 0;
+            offset = offsetStream.read();
+            match_loc = output_cnt - offset;
+            match_len = matchlenStream.read();
+            output_cnt += match_len;
+            next_state = READ_MATCH;
+        }else if (next_state == READ_MATCH){
+            read_buff_ind = match_loc/(2*PARALLEL_BYTE);
+            byte_loc = match_loc%(2*PARALLEL_BYTE);
+            
+            // Read two data from the local buffer since the data to access can go to
+            // consecutive local buffer index 
+            ap_uint<2*PARALLEL_BIT> localValue;
+            uint32_t even_idx = 0;
+            uint32_t odd_idx = read_buff_ind % BUFFER_SIZE;
+            if (byte_loc < PARALLEL_BYTE){
+                even_idx  = read_buff_ind % BUFFER_SIZE;
+            }else{
+                even_idx  = (read_buff_ind+1) % BUFFER_SIZE;
+            }
+            ap_uint<PARALLEL_BIT> even_temp, odd_temp;
+            even_temp.range(PARALLEL_BIT-1,0) = local_buf_even[even_idx];
+            odd_temp.range(PARALLEL_BIT-1,0) = local_buf_odd[odd_idx];
+
+            if (byte_loc < PARALLEL_BYTE){
+                localValue.range(PARALLEL_BIT-1,0) = even_temp.range(PARALLEL_BIT-1, 0);
+                localValue.range((2*PARALLEL_BIT)-1,PARALLEL_BIT) = odd_temp.range(PARALLEL_BIT-1, 0);
+            }
+            else{
+                localValue.range(PARALLEL_BIT-1,0) = odd_temp.range(PARALLEL_BIT-1, 0);
+                localValue.range((2*PARALLEL_BIT)-1,PARALLEL_BIT) = even_temp.range(PARALLEL_BIT-1, 0);
+            }
+            //printf("match_loc: %d \t",(read_buff_ind % HISTORY_SIZE));
+            for (uint8_t copy = 0; copy < PARALLEL_BYTE; copy++){
+            #pragma HLS LOOP UNROLL
+                output_window.range(((copy+output_index)+1)*8 -1, (copy+output_index)*8) = localValue.range(((copy+(byte_loc%PARALLEL_BYTE))+1)*8 - 1, (copy+(byte_loc%PARALLEL_BYTE))*8);
+            }
+            if (match_len >= PARALLEL_BYTE){                    
+                incr_output_index = PARALLEL_BYTE;                    
+                match_loc += PARALLEL_BYTE;
+                match_len -= PARALLEL_BYTE;
+            }else{
+                incr_output_index = match_len;
+                match_loc += match_len;
+                match_len = 0;
+            }
+            if(match_len ==0){
+                next_state = READ_LIT_LEN;
+            }else{
+                next_state = READ_MATCH;
+            }
+        }
+        if ((output_index+incr_output_index) >= PARALLEL_BYTE){
+            for (uint8_t k = 0; k < PARALLEL_BYTE; k++){
+            #pragma HLS LOOP UNROLL
+                outStreamValue.range((k+1)*8 - 1, k*8) = output_window.range((k+1)*8 -1, k*8);
+            }
+            outStreamFlag=true;
+            if (even_cntr){
+                local_buf_even[even_write_buff_ind % BUFFER_SIZE] = outStreamValue;            
+                even_write_buff_ind += 1;
+                even_cntr=false;
+            }else{
+                local_buf_odd[odd_write_buff_ind % BUFFER_SIZE] = outStreamValue;            
+                odd_write_buff_ind += 1;
+                even_cntr=true;
+            }
+            
+            for(uint8_t shift = 0; shift < PARALLEL_BYTE; shift++){
+            #pragma HLS LOOP UNROLL
+                output_window.range((shift+1)*8 -1, shift*8) = output_window.range(((shift+PARALLEL_BYTE)+1)*8 -1, (shift+PARALLEL_BYTE)*8);
+            }
+            output_index += incr_output_index - PARALLEL_BYTE;
+        }else{            
+            outStreamFlag = false;
+            output_index += incr_output_index;
+        }        
+
+        if (outStreamFlag){
+            outStream << outStreamValue;
+            outCntr+=PARALLEL_BYTE;
+        }
+    }
+    out_size += PARALLEL_BYTE;
+    
+    // Write out if there is remaining left over data in output buffer
+    // to outStream
+    if((original_size%PARALLEL_BYTE)!=0){
+            for (uint8_t k = 0; k < PARALLEL_BYTE; k++){
+            #pragma HLS LOOP UNROLL
+                outStreamValue.range((k+1)*8 - 1, k*8) = output_window.range((k+1)*8 -1, k*8);
+            }
+            outStream << outStreamValue;
+    }
+    //printf("LoopTerminate:%d \t decompress_outSize:%d \n",out_size,total_cntr);
+}

@@ -24,22 +24,22 @@ kernels with 8 engines for single compute unit. It is possible to extend number 
 
 | Design | LUT | LUTMEM | REG | BRAM | URAM| DSP | Fmax (MHz) |
 | --------------- | --- | ------ | --- | ---- | --- | -----| -----|
-| Compression     | 81379(7.97%) | 24525(4.25%)|69250(3.25%)|146(7.60%) | 48(5.23%)|1(0.01%)|250|
-| Decompression     | 35750(3.58%) | 13774(2.40%)|44464(2.11%)|146(7.60%)|0|1(0.01%)|250|
+| Compression     | 81379(7.97%) | 24525(4.25%)|69250(3.25%)| 146(7.60%)| 48(5.23%)|1(0.01%)|250|
+| Decompression     | 28221(2.83%) |8068(1.41%) |32667(1.55%)|10(0.52%)|0|3(0.04%)|250|
 
 
 
 ### Throughput & Compression Ratio
 
-Table below presents the best kernel throughput achieved with single compute unit during execution of this application.
+Table below presents the best throughput achieved during execution of this application.
 
 | Topic| Results| 
 |-------|--------|
-|Best Compression Throughput|1.73 GB/s|
-|Best Decompression Throughput| 1.72 GB/s |
-|Average Compression Ratio| 2.15x (Silesia Benchmark)|
+|Best Compression Throughput|1.72 GB/s|
+|Best Decompression Throughput| 6.63 GB/s |
+|Average Compression Ratio| 1.95x (Silesia Benchmark)|
 
-Note: Overall throughput can still be increased with multiple compute units.
+Note: This throughput is reported for buffer to buffer using two compute units. The throughput reported above is for large files >100MB. Overall throughput can still be increased with multiple compute units.
 
 ## Software & Hardware
 

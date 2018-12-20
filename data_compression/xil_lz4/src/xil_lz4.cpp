@@ -132,10 +132,10 @@ uint64_t xil_lz4::compress_file(std::string & inFile_name,
         outFile.put((uint8_t)(xxh>>8));
         
         // LZ4 overlap & multiple compute unit compress 
-        uint64_t enbytes = compress(in.data(), out.data(), input_size, host_buffer_size);
+        //uint64_t enbytes = compress(in.data(), out.data(), input_size, host_buffer_size);
    
         // LZ4 multiple/single cu sequential version
-        //uint32_t enbytes = compress_sequential(in.data(), out.data(), input_size);
+        uint32_t enbytes = compress_sequential(in.data(), out.data(), input_size);
     
         // Writing compressed data
         outFile.write((char *)out.data(), enbytes);
@@ -194,6 +194,9 @@ void xil_lz4::buffer_extension_assignments(bool flow){
                 outExt[i][j].flags = decomp_ddr_nums[i];
                 outExt[i][j].obj   = h_buf_out[i][j].data();
                 
+                osExt[i][j].flags = decomp_ddr_nums[i];
+                osExt[i][j].obj   = h_buf_outSize[i][j].data();
+
                 csExt[i][j].flags = decomp_ddr_nums[i];
                 csExt[i][j].obj   = h_compressSize[i][j].data();
                 
@@ -214,6 +217,7 @@ xil_lz4::xil_lz4(){
             h_buf_out[i][j].resize(HOST_BUFFER_SIZE);
             h_blksize[i][j].resize(MAX_NUMBER_BLOCKS);
             h_compressSize[i][j].resize(MAX_NUMBER_BLOCKS);    
+            h_buf_outSize[i][j].resize(MAX_NUMBER_BLOCKS);    
             
             m_compressSize[i][j].reserve(MAX_NUMBER_BLOCKS);
             m_blkSize[i][j].reserve(MAX_NUMBER_BLOCKS);
@@ -356,10 +360,10 @@ uint64_t xil_lz4::decompress_file(std::string & inFile_name,
             host_buffer_size = HOST_BUFFER_SIZE;
         }         
         // Decompression Overlapped multiple cu solution
-        uint64_t debytes = decompress(in.data(), out.data(), (input_size - 15), original_size, host_buffer_size);
+        //uint64_t debytes = decompress(in.data(), out.data(), (input_size - 15), original_size, host_buffer_size);
 
         // Decompression Sequential multiple cus.
-        // uint32_t debytes = decompress_sequential(in.data(), out.data(), (input_size - 15), original_size);
+        uint32_t debytes = decompress_sequential(in.data(), out.data(), (input_size - 15), original_size);
 
         outFile.write((char *)out.data(), debytes);
         // Close file 
@@ -793,6 +797,9 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
     int block_cntr = 0;
     int done_block_cntr = 0;
 
+    //Assignment to the buffer extensions
+    buffer_extension_assignments(0);
+
     uint32_t no_compress_case=0;
     std::chrono::duration<double, std::nano> kernel_time_ns_1(0);
     uint64_t inIdx = 0;
@@ -802,6 +809,7 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
     int compute_cu;
     uint64_t output_idx = 0;
 
+    uint32_t orig_size = 0;
     for (uint64_t outIdx = 0 ; outIdx < original_size ; outIdx +=HOST_BUFFER_SIZE * D_COMPUTE_UNIT){
         compute_cu = 0;
         uint32_t chunk_size  = HOST_BUFFER_SIZE;
@@ -879,6 +887,7 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
                     //No compression block
                     std::memcpy(&(out[outIdx + cuProc * HOST_BUFFER_SIZE + cIdx]),&in[inIdx],block_size);
                     inIdx += block_size;
+                    orig_size += block_size;
                 }else{
                     assert(0);
                 }
@@ -899,6 +908,9 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
             buffer_output[bufC][0] = new cl::Buffer(*m_context, 
                     CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,  buf_size[bufC], &outExt[bufC]);
 
+            buffer_outSize[bufC][0] = new cl::Buffer(*m_context, 
+                    CL_MEM_USE_HOST_PTR | CL_MEM_WRITE_ONLY | CL_MEM_EXT_PTR_XILINX,  sizeof(uint32_t), &osExt[bufC]);
+            
             buffer_block_size[bufC][0] = new cl::Buffer(*m_context, 
                     CL_MEM_USE_HOST_PTR | CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX,  sizeof(uint32_t) * bufblocks[bufC], &bsExt[bufC]);
             
@@ -910,7 +922,8 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
         for (int sArg = 0; sArg < compute_cu; sArg++) {
             uint32_t narg = 0;
             decompress_kernel_lz4[sArg]->setArg(narg++, *(buffer_input[sArg][0]));
-            decompress_kernel_lz4[sArg]->setArg(narg++, *(buffer_output[sArg][0]));
+            //decompress_kernel_lz4[sArg]->setArg(narg++, *(buffer_output[sArg][0]));
+            decompress_kernel_lz4[sArg]->setArg(narg++, *(buffer_outSize[sArg][0]));
             decompress_kernel_lz4[sArg]->setArg(narg++, *(buffer_block_size[sArg][0]));
             decompress_kernel_lz4[sArg]->setArg(narg++, *(buffer_compressed_size[sArg][0]));
             decompress_kernel_lz4[sArg]->setArg(narg++, m_block_size_in_kb);
@@ -940,8 +953,9 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
         kernel_time_ns_1 += duration;
         
         std::vector<cl::Memory> outBufVec;
-        for (int oVec = 0; oVec < compute_cu; oVec++) 
-            outBufVec.push_back(*(buffer_output[oVec][0]));
+        for (int oVec = 0; oVec < compute_cu; oVec++){ 
+            outBufVec.push_back(*(buffer_outSize[oVec][0]));
+        }
 
         // Migrate memory - Map device to host buffers
         m_q->enqueueMigrateMemObjects(outBufVec,CL_MIGRATE_MEM_OBJECT_HOST);
@@ -952,6 +966,7 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
             for (uint32_t bIdx = 0, idx=0 ; bIdx < nblocks[cuRead]; bIdx++, idx +=block_size_in_bytes){
                 uint32_t block_size         = m_blkSize[cuRead][0].data()[bIdx];
                 uint32_t compressed_size    = m_compressSize[cuRead][0].data()[bIdx];
+                orig_size += h_buf_outSize[cuRead][0].data()[bIdx];
                 if (compressed_size < block_size){
                     std::memcpy(&out[output_idx], &h_buf_out[cuRead][0].data()[bufIdx], block_size);
                     output_idx += block_size;
@@ -967,11 +982,15 @@ uint64_t xil_lz4::decompress_sequential(uint8_t *in,
         for (int dBuf = 0; dBuf < compute_cu; dBuf++) {
             delete (buffer_input[dBuf][0]);
             delete (buffer_output[dBuf][0]);
+            delete (buffer_outSize[dBuf][0]);
             delete (buffer_block_size[dBuf][0]);
             delete (buffer_compressed_size[dBuf][0]);
         }
     } // Top - Main loop ends here
-    
+   
+    //std::cout << "OriginalSize:" << original_size << "\t" << "Dec_Size:" << orig_size << std::endl;
+    if (original_size == orig_size) printf ("TEST PASSED\n");
+    else printf ("TEST FAILED\n");
     float throughput_in_mbps_1 = (float)total_decomression_size* 1000 / kernel_time_ns_1.count();
     std::cout << std::fixed << std::setprecision(2) << throughput_in_mbps_1;
     return original_size;
@@ -1322,6 +1341,9 @@ uint64_t xil_lz4::compress_sequential(uint8_t *in,
 
     uint32_t no_compress_case=0;
    
+    //Assignment to the buffer extensions
+    buffer_extension_assignments(1);
+
     std::chrono::duration<double, std::nano> kernel_time_ns_1(0);
     
     // Keeps track of output buffer index
